@@ -1,0 +1,12 @@
+
+.idea/
+
+*.py[cod]
+
+logs/log*
+
+migrations
+
+
+.DS_Store
+*/.DS_Store
