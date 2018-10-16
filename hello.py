@@ -1,10 +1,14 @@
-from datetime import datetime
+import os
 from flask import Flask, render_template, session, redirect, flash, url_for
 from flask_bootstrap import Bootstrap
+from flask_migrate import Migrate, MigrateCommand
 from flask_moment import Moment
+from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import FlaskForm
+from flask_script import Manager
 from wtforms import StringField, SubmitField
 from wtforms.validators import DataRequired
+import pymysql
 
 """
 __name__意思是当前文件(hello.py)的名字，Flask传入该参数表示
@@ -17,13 +21,31 @@ app = Flask(__name__)
 #4章：这个字符串随便定义，定义越长，以及字符串内容庞杂则加密效果越好
 app.config['SECRET_KEY'] = 'fafafafjkjooqkopwkqjigroiwg'
 
+"""
+5章：
+basedir：获取项目的动态路径，通过os.path模块，获得当前的绝对路径，__file__返回hello.py文件名，
+os.path.dirname则返回hello.py的文件夹名，通过abspath获得hello.py所在的绝对路径
+配置数据库config，'SQLALCHEMY_DATABASE_URI'指定数据库链接为sqlite
+'SQLALCHEMY_TRACK_MODIFICATIONS'字面意思是追踪修改,False即表示不追踪数据库的修改记录，设置的目的是不设置
+会报错，是flask-sqlAlchemy强制要求设置，设置为False，因为数据库变更无须追踪；
+'SQLALCHEMY_COMMIT_ON_TEARDOWN'这句命令作用很大，表示数据库如果修改数据了，会自动提交数据。
+"""
+basedir = os.path.abspath(os.path.dirname(__file__))
+# app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'data.sqlite')
+# 用mysql来实现，依据书本46页可知配置如下，我的用户名是root，密码是123456，host(域名)是127.0.0.1(表示本机)，数据库名是flask_web
+app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:123456@127.0.0.1/flask_web'
+app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 """
-实例化对象：将Bootstrap和Moment类实例化，传入的app表示
-当前应用程序。
+实例化对象：将Bootstrap和Moment类实例化，传入的app表示当前应用程序。
 """
 bootstrap = Bootstrap(app)
 moment = Moment(app)
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)
+manager = Manager(app)
+manager.add_command('db', MigrateCommand)
 
 #类似于@app.route('/')，起到当浏览器访问的地址在路由上找不到时，
 #服务器端返回404(状态码，表示找不到该网址)，此时则由该路由接收
@@ -72,5 +94,35 @@ def index():
     #后一个name则表示数据，再这里就是form.name.data
     return render_template('index.html', form=form, name=session.get('name'))
 
+#定义Role类，一个类对应一个数据表
+class Role(db.Model):
+    # 表名为roles，不定义的话，SQLAlchemy会默认定义。
+    __tablename__ = 'roles'
+    # 依次定义id、name
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(64), unique=True)
+    #1对多：relationship表示链接的外键关系，第一个参数是链接外键所在的类名
+    #backref==>back reference即回引，即可以通过一个表获得关系表的数据，
+    # 举例：Role.users通过Role获得users的数据(下方定义)，User.role(下方定义)获得role数据
+    # lazy=dynamic表示动态加载，意思是当Role.users时不会立马返回结果(好处是不用立马查询数据库，利于性能优化)，
+    users = db.relationship('User', backref='role', lazy='dynamic')
+    # 定义__repr__便于在操作数据库时可以在控制台查询对象
+    def __repr__(self):
+        return '<Role %r>' % self.name
+
+# 这个了解下就好，后续的数据库都是通过数据库迁移来完成数据库的录入和修改
+@app.shell_context_processor
+def make_shell_context():
+    return dict(db=db, User=User, Role=Role)
+
+class User(db.Model):
+    __tablename__ = 'users'
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(64), unique=True, index=True)
+    role_id = db.Column(db.Integer, db.ForeignKey('roles.id'))
+
+    def __repr__(self):
+        return '<User %r>' % self.username
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    manager.run()
