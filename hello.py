@@ -1,4 +1,6 @@
 import os
+from threading import Thread
+
 from flask import Flask, render_template, session, redirect, flash, url_for
 from flask_bootstrap import Bootstrap
 from flask_migrate import Migrate, MigrateCommand
@@ -6,6 +8,7 @@ from flask_moment import Moment
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import FlaskForm
 from flask_script import Manager
+from flask_mail import Mail, Message
 from wtforms import StringField, SubmitField
 from wtforms.validators import DataRequired
 import pymysql
@@ -47,6 +50,37 @@ migrate = Migrate(app, db)
 manager = Manager(app)
 manager.add_command('db', MigrateCommand)
 
+#邮件设置
+app.config['MAIL_SERVER'] = 'smtp.qq.com'
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = '邮箱账号'
+app.config['MAIL_PASSWORD'] = '邮箱密码'
+app.config['FLASKY_MAIL_SUBJECT_PREFIX'] = '[Flasky]'
+app.config['FLASKY_MAIL_SENDER'] = '邮箱账号'
+app.config['FLASKY_ADMIN'] = os.environ.get('FLASKY_ADMIN')
+
+#必须定义在config下面！
+mail = Mail(app)
+
+#配置上下文，发送邮件
+def send_async_email(app, msg):
+    with app.app_context():
+        mail.send(msg)
+
+#定义发送的函数send_mail
+def send_email(to, subject, template, **kwargs):
+    #Message封装了多个默认参数，这里传入主题、发件人、收件人就行
+    msg = Message(app.config['FLASKY_MAIL_SUBJECT_PREFIX'] + subject,
+                  sender=app.config['FLASKY_MAIL_SENDER'], recipients=[to])
+    #定义发送的内容
+    msg.body = render_template(template + '.txt', **kwargs)
+    msg.html = render_template(template + '.html', **kwargs)
+    #通过另一个线程来发送邮件
+    thr = Thread(target=send_async_email, args=[app, msg])
+    thr.start()
+    return thr
+
+
 #类似于@app.route('/')，起到当浏览器访问的地址在路由上找不到时，
 #服务器端返回404(状态码，表示找不到该网址)，此时则由该路由接收
 @app.errorhandler(404)
@@ -79,20 +113,26 @@ def index():
     form = NameForm()
     #判断是否提交，如果提交了，则将提交的数据赋值到name变量，传给模版
     if form.validate_on_submit():
-        #session是字典结构，get方法获取不到的话则返回None，这里第一次提交明显获取不到，所以返回None
-        old_name = session.get('name')
-        #判断old_name非空且不等于表单的输入数据时执行
-        if old_name is not None and old_name != form.name.data:
-            # flash可以把内容显示出来
-            flash('Looks like you have changed your name!')
-        #第一次提交时，session还无值，所以在这边给session赋值，赋值方法就是字典添加数据方法。
-        #form.name.data表示：form是NameForm实例，即NameForm下的name字段的data数据，即表单输入数据
-        session['name'] = form.name.data
-        #依据书本内容重定向到首页
-        return redirect(url_for('index'))
+        #过滤查询username==输入框输入的数据，并查询出第一条
+        user = User.query.filter_by(username=form.name.data).first()
+        #判断user是否有数据，有的话说明该名字之前已经记录到数据库，没有的话则将数据录入数据库
+        if user is None:
+            # 将数据录入数据库
+            user = User(username=form.name.data)
+            # 录入后要提交，但因为我们定义了app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True，所以即使不提交问题也不大
+            db.session.add(user)
+            db.session.commit()
+            #给session配上标志位，False则说明user为空，此时刷新语句为please meet you，反之相反
+            session['known'] = False
+            if app.config['FLASKY_ADMIN']:
+                send_email(app.config['FLASKY_ADMIN'], 'New User',
+                           'mail/new_user', user=user)
+        else:
+            session['known'] = True
     #渲染模版，同时传回数据给模版，name=name第一个name表示变量name，即前端可以通过name变量获得值，
     #后一个name则表示数据，再这里就是form.name.data
-    return render_template('index.html', form=form, name=session.get('name'))
+    return render_template('index.html', form=form, name=session.get('name'),
+                           known=session.get('known', False))
 
 #定义Role类，一个类对应一个数据表
 class Role(db.Model):
